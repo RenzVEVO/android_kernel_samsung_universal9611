@@ -47,23 +47,91 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          # Replaced python3-is-python3 with python-is-python3 for compatibility with newer Ubuntu versions
           sudo apt-get install -y git make libssl-dev curl bc pkg-config m4 libtool automake autoconf python-is-python3 # Dependencies from the compilation guide [1]
 
       - name: Clone kernel repository
         uses: actions/checkout@v4
         with:
           repository: Exynos9611Development/android_kernel_samsung_universal9611 # The kernel source [1]
-          path: android_kernel_samsung_universal9611
-          # ref: 'main' # Or specify a branch/tag if needed
+          path: android_kernel_samsung_universal9611 # Clones into this subdirectory
+          # ref: 'main' 
 
-      - name: Set up toolchain
-        working-directory: ./android_kernel_samsung_universal9611
-        run: bash <(curl -s https://gist.githubusercontent.com/cat658011/9462b1778231226b4fae0171a8cf1fd3/raw/setup-toolchain.sh) # Toolchain setup script from the guide [1]
-
-      - name: Build kernel
+      - name: Verify initial checkout and list files
         working-directory: ./android_kernel_samsung_universal9611
         run: |
+          echo "Current directory: $(pwd)"
+          echo "Listing contents of checked-out kernel source:"
+          ls -la
+          if [ ! -d "AnyKernel3" ]; then
+            echo "Error: AnyKernel3 directory is missing after checkout."
+            exit 1
+          fi
+          if [ ! -f "AnyKernel3/anykernel.sh" ]; then
+            echo "Error: AnyKernel3/anykernel.sh is missing after checkout."
+            ls -la AnyKernel3/ # List contents if script is missing
+            exit 1
+          fi
+          echo "AnyKernel3 directory and anykernel.sh found."
+
+      - name: Set up toolchain
+        working-directory: ./android_kernel_samsung_universal9611 # This is the root of the cloned kernel source
+        run: |
+          set -e # Exit immediately if a command exits with a non-zero status.
+          echo "Starting toolchain setup..."
+          TOOLCHAIN_SCRIPT_URL="https://gist.githubusercontent.com/cat658011/9462b1778231226b4fae0171a8cf1fd3/raw/setup-toolchain.sh"
+          
+          echo "Downloading setup-toolchain.sh..."
+          curl -sL -o setup-toolchain.sh "$TOOLCHAIN_SCRIPT_URL"
+          
+          if [ ! -s setup-toolchain.sh ]; then
+            echo "Error: Failed to download toolchain script or script is empty."
+            exit 1
+          fi
+          
+          echo "Executing setup-toolchain.sh. This might take a while..."
+          bash setup-toolchain.sh
+          
+          echo "Toolchain setup script finished."
+          echo "Verifying toolchain directory and clang..."
+          if [ -d "toolchain" ] && [ -f "toolchain/bin/clang" ]; then
+            echo "Toolchain directory and clang binary found."
+            echo "Contents of toolchain/bin:"
+            ls -la toolchain/bin
+          else
+            echo "Error: Toolchain directory (toolchain) or toolchain/bin/clang was NOT created/found after script execution."
+            echo "Contents of current directory (should be kernel source root):"
+            ls -la
+            if [ -d "toolchain" ]; then
+              echo "Contents of toolchain directory:"
+              ls -la toolchain
+              if [ -d "toolchain/bin" ]; then
+                echo "Contents of toolchain/bin:"
+                ls -la toolchain/bin
+              else
+                echo "toolchain/bin directory does not exist."
+              fi
+            else
+              echo "toolchain directory does not exist."
+            fi
+            exit 1 # Explicitly fail if toolchain is not set up correctly
+          fi
+
+      - name: Build kernel
+        working-directory: ./android_kernel_samsung_universal9611 # This is the root of the cloned kernel source
+        run: |
+          echo "Current directory before build: $(pwd)"
+          echo "Listing contents to ensure everything is in place:"
+          ls -la
+          echo "Checking AnyKernel3 again:"
+          ls -la AnyKernel3/
+          echo "Checking toolchain again:"
+          ls -la toolchain/
+          if [ -d "toolchain/bin" ]; then
+            ls -la toolchain/bin/
+          else
+            echo "toolchain/bin not found right before build!"
+          fi
+
           ADDITIONAL_FLAGS=""
           if ${{ github.event.inputs.oneui == true }}; then
             ADDITIONAL_FLAGS="$ADDITIONAL_FLAGS --oneui"
@@ -82,7 +150,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: kernel-zip-${{ github.event.inputs.device }}
-          # The README states: "The resulting ZIP file with the kernel will appear in the main repository directory after completion." [1]
-          # The file name is typically SN_version_device_ROM_date.zip
-          path: ./android_kernel_samsung_universal9611/SN_*.zip 
-          if-no-files-found: error # Fail the workflow if the zip file isn't found
+          path: ./android_kernel_samsung_universal9611/SN_*.zip # Path relative to $GITHUB_WORKSPACE
+          if-no-files-found: error
