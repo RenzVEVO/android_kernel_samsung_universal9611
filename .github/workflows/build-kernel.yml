@@ -3,6 +3,18 @@ name: Build Exynos 9611 Kernel
 on:
   workflow_dispatch:
     inputs:
+      device:
+        description: 'Target device for the kernel build'
+        type: choice
+        required: true
+        options:
+          - a51
+          - f41
+          - m31s
+          - gta4xl
+          - gta4xlwifi
+          - m21
+        default: 'a51'
       oneui:
         description: 'Build for OneUI (Default is AOSP variant)'
         type: boolean
@@ -18,15 +30,11 @@ on:
 
 jobs:
   build_kernel:
-    name: Build for ${{ matrix.device }}
+    name: Build for ${{ github.event.inputs.device }}
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false # If one device build fails, others will continue
-      matrix:
-        device: [a51, f41, m31s, gta4xl, gta4xlwifi, m21] # As per the compilation guide [1]
 
     steps:
-      - name: Maximize build space # Kernel builds can be disk-space intensive
+      - name: Maximize build space
         uses: easimon/maximize-build-space@v10
         with:
           root-reserve-mb: 512
@@ -39,21 +47,22 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git make libssl-dev curl bc pkg-config m4 libtool automake autoconf python3-is-python3 # Dependencies from the compilation guide [1]
+          # Replaced python3-is-python3 with python-is-python3 for compatibility with newer Ubuntu versions
+          sudo apt-get install -y git make libssl-dev curl bc pkg-config m4 libtool automake autoconf python-is-python3 # Dependencies from the compilation guide [1]
 
       - name: Clone kernel repository
         uses: actions/checkout@v4
         with:
           repository: Exynos9611Development/android_kernel_samsung_universal9611 # The kernel source [1]
-          path: android_kernel_samsung_universal9611 # Clone into this directory
-          # ref: 'main' # Or specify a branch/tag if needed, e.g., 'SomethingNew-15'
+          path: android_kernel_samsung_universal9611
+          # ref: 'main' # Or specify a branch/tag if needed
 
       - name: Set up toolchain
-        working-directory: ./android_kernel_samsung_universal9611 # Commands need to be run in the kernel source directory
+        working-directory: ./android_kernel_samsung_universal9611
         run: bash <(curl -s https://gist.githubusercontent.com/cat658011/9462b1778231226b4fae0171a8cf1fd3/raw/setup-toolchain.sh) # Toolchain setup script from the guide [1]
 
       - name: Build kernel
-        working-directory: ./android_kernel_samsung_universal9611 # Build script is in this directory
+        working-directory: ./android_kernel_samsung_universal9611
         run: |
           ADDITIONAL_FLAGS=""
           if ${{ github.event.inputs.oneui == true }}; then
@@ -66,14 +75,14 @@ jobs:
             ADDITIONAL_FLAGS="$ADDITIONAL_FLAGS --permissive"
           fi
           
-          echo "Building kernel for target: ${{ matrix.device }} with additional flags: $ADDITIONAL_FLAGS"
-          python3 build_kernel.py --target=${{ matrix.device }} $ADDITIONAL_FLAGS # Build command from the guide [1]
+          echo "Building kernel for target: ${{ github.event.inputs.device }} with additional flags: $ADDITIONAL_FLAGS"
+          python3 build_kernel.py --target=${{ github.event.inputs.device }} $ADDITIONAL_FLAGS # Build command from the guide [1]
 
       - name: Upload Kernel Zip
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-zip-${{ matrix.device }}
+          name: kernel-zip-${{ github.event.inputs.device }}
           # The README states: "The resulting ZIP file with the kernel will appear in the main repository directory after completion." [1]
           # The file name is typically SN_version_device_ROM_date.zip
-          path: ./android_kernel_samsung_universal9611/SN_*.zip
+          path: ./android_kernel_samsung_universal9611/SN_*.zip 
           if-no-files-found: error # Fail the workflow if the zip file isn't found
