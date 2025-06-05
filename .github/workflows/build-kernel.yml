@@ -1,4 +1,4 @@
-name: Build Exynos 9611 Kernel with Advanced Features
+name: Build Exynos 9611 Kernel
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ on:
         description: 'Target device for the kernel build'
         type: choice
         required: true
-        options:
+        options: 
           - a51
           - f41
           - m31
@@ -15,7 +15,7 @@ on:
           - gta4xl
           - gta4xlwifi
           - m21
-        default: 'a51'
+        default: 'a515f'
       oneui:
         description: 'Build for OneUI (Default is AOSP variant)'
         type: boolean
@@ -32,60 +32,18 @@ on:
         description: 'Enable verbose output from build_kernel.py (if supported)'
         type: boolean
         default: false
-      build_method: 
-        description: 'Build method (perf for non-GKI, gki otherwise). Exynos 9611 is non-GKI.'
-        type: choice
-        required: true
-        default: perf
-        options:
-          - perf
-          - gki
-      susfs_download_source: # Changed from susfs_ci (boolean) to a choice
-        description: 'Source for downloading SUSFS module'
-        type: choice
-        required: true
-        default: 'ci'
-        options:
-          - 'ci'        # Download from GitHub Actions CI artifact
-          - 'release'   # Download from GitHub Release
-      vfs_hooks: 
-        description: 'Enable manual syscall hooks (VFS patches)?'
-        type: boolean
-        default: true
-      kpm_enable: 
-        description: 'Enable Kernel Patch Manager (KPM)?'
-        type: boolean
-        default: true
-      zram_features: 
-        description: 'Enable additional ZRAM algorithms and features (LZ4KD)?'
-        type: boolean
-        default: false
 
 jobs:
   build_kernel:
-    name: Build for ${{ github.event.inputs.device }} (${{ github.event.inputs.build_method }})
+    name: Build for ${{ github.event.inputs.device }}
     runs-on: ubuntu-latest
 
     steps:
-      - name: Show selected inputs (Debug)
-        run: |
-          echo "Workflow Inputs:"
-          echo "  Device: ${{ github.event.inputs.device }}"
-          echo "  OneUI: ${{ github.event.inputs.oneui }}"
-          echo "  Allow Dirty: ${{ github.event.inputs.allow_dirty }}"
-          echo "  Permissive: ${{ github.event.inputs.permissive }}"
-          echo "  Verbose Build: ${{ github.event.inputs.verbose_build }}"
-          echo "  Build Method: ${{ github.event.inputs.build_method }}"
-          echo "  SUSFS Download Source: ${{ github.event.inputs.susfs_download_source }}" # Updated name
-          echo "  VFS Hooks: ${{ github.event.inputs.vfs_hooks }}"
-          echo "  KPM Enable: ${{ github.event.inputs.kpm_enable }}"
-          echo "  ZRAM Features: ${{ github.event.inputs.zram_features }}"
-
       - name: Maximize build space
         uses: easimon/maximize-build-space@v10
         with:
-          root-reserve-mb: 8192
-          swap-size-mb: 8192
+          root-reserve-mb: 512
+          swap-size-mb: 1024
           remove-dotnet: 'true'
           remove-haskell: 'true'
           remove-android: 'true'
@@ -94,219 +52,77 @@ jobs:
       - name: Install general dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git make libssl-dev curl bc pkg-config m4 libtool automake autoconf python-is-python3 libarchive-tools jq wget
+          sudo apt-get install -y git make libssl-dev curl bc pkg-config m4 libtool automake autoconf python-is-python3 libarchive-tools # Dependencies from the compilation guide [1] and user feedback
 
       - name: Clone kernel repository with submodules
         uses: actions/checkout@v4
         with:
-          repository: Exynos9611Development/android_kernel_samsung_universal9611
+          repository: Exynos9611Development/android_kernel_samsung_universal9611 # The kernel source [1]
           path: android_kernel_samsung_universal9611
           submodules: 'recursive'
+
+      - name: Verify AnyKernel3 checkout
+        working-directory: ./android_kernel_samsung_universal9611
+        run: |
+          echo "Checking AnyKernel3 directory and anykernel.sh..."
+          if [ ! -f "AnyKernel3/anykernel.sh" ]; then
+            echo "Error: AnyKernel3/anykernel.sh is missing after checkout with submodules."
+            echo "Contents of AnyKernel3 directory:"
+            ls -la AnyKernel3/
+            exit 1
+          fi
+          echo "AnyKernel3/anykernel.sh found successfully."
 
       - name: Setup Clang Toolchain (Neutron with Antman)
         working-directory: ./android_kernel_samsung_universal9611
         run: |
           set -e 
-          mkdir toolchain && cd toolchain
+          echo "Creating toolchain directory..."
+          mkdir toolchain
+          cd toolchain
+          echo "Current directory for antman: $(pwd)"
+          echo "Running antman -S=10032024 (downloading Neutron Clang)..."
           bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") -S=10032024
+          echo "Running antman --patch=glibc (patching for glibc)..."
           bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") --patch=glibc
-          cd ..
-          echo "CLANG_PATH=$(pwd)/toolchain" >> $GITHUB_ENV
-          echo "Antman toolchain setup complete. Clang version:"
-          ./toolchain/bin/clang --version
-
-      - name: Add KernelSU (SukiSU Ultra)
-        if: ${{ github.event.inputs.kpm_enable || github.event.inputs.vfs_hooks }} # Using direct boolean evaluation
-        working-directory: ./android_kernel_samsung_universal9611
-        run: |
-          echo "DEBUG: Evaluating 'Add KernelSU': kpm_enable is ${{ github.event.inputs.kpm_enable }}, vfs_hooks is ${{ github.event.inputs.vfs_hooks }}"
-          echo "Adding KernelSU (SukiSU Ultra)..."
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-dev
-          cd ./KernelSU
-          KSU_COMMIT_COUNT=$(git rev-list --count HEAD)
-          CALCULATED_KSU_VERSION=$((10000 + KSU_COMMIT_COUNT))
-          echo "Derived KSU_VERSION: $CALCULATED_KSU_VERSION"
-          echo "KSUVER=$CALCULATED_KSU_VERSION" >> $GITHUB_ENV
-          if [ -f "kernel/Makefile" ]; then
-            sed -i "s/define KSU_VERSION .*/define KSU_VERSION ${CALCULATED_KSU_VERSION}/g" kernel/Makefile
-            echo "Updated KernelSU/kernel/Makefile with KSU_VERSION ${CALCULATED_KSU_VERSION}"
+          echo "Toolchain setup with antman finished."
+          echo "Verifying toolchain contents..."
+          if [ -f "bin/clang" ] || compgen -G "*/bin/clang" > /dev/null; then
+            echo "Clang binary found in toolchain."
           else
-            echo "KernelSU/kernel/Makefile not found, skipping KSU_VERSION update in Makefile."
+            echo "Error: Clang binary was NOT found in toolchain/bin or toolchain/*/bin after antman script execution."
+            ls -la # List contents of toolchain
+            if compgen -G "*/bin" > /dev/null; then ls -la */bin; fi # List contents of any */bin directory
+            exit 1
           fi
-          echo "KernelSU (SukiSU Ultra) setup script executed."
-
-      - name: Apply SukiSU Ultra Patches (SUSFS, Hide, VFS)
-        if: ${{ github.event.inputs.kpm_enable || github.event.inputs.vfs_hooks }}
-        working-directory: ./android_kernel_samsung_universal9611
-        run: |
-          echo "DEBUG: Evaluating 'Apply SukiSU Ultra Patches': kpm_enable is ${{ github.event.inputs.kpm_enable }}, vfs_hooks is ${{ github.event.inputs.vfs_hooks }}"
-          echo "Applying SukiSU Ultra patches..."
-          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android13-5.10 # Adjust branch if needed
-          git clone https://github.com/ShirkNeko/SukiSU_patch.git
-          # Placeholder for actual patching commands - YOU WILL NEED TO ADD THESE
-          echo "Attempting to apply SUSFS patches (WARNING: Patches for 4.14 needed)..."
-          # Example: cp ./susfs4ksu/kernel_patches/some_patch_for_4.14.patch ./ && patch -p1 < some_patch_for_4.14.patch || echo "SUSFS patch failed"
-          
-          if ${{ github.event.inputs.vfs_hooks }}; then
-            echo "Attempting to apply Hide Stuff patch (WARNING: Patches for 4.14 needed)..."
-            # Example: cp ./SukiSU_patch/69_hide_stuff_for_4.14.patch ./ && patch -p1 < 69_hide_stuff_for_4.14.patch || echo "Hide stuff patch failed"
-            echo "Attempting to apply VFS patch (WARNING: Patches for 4.14 needed)..."
-            # Example: cp ./SukiSU_patch/hooks/syscall_hooks_for_4.14.patch ./ && patch -p1 < syscall_hooks_for_4.14.patch || echo "VFS patch failed"
-          fi
-          echo "SukiSU patches applied (or attempted)."
-
-      - name: Apply ZRAM Patches (LZ4KD)
-        if: ${{ github.event.inputs.zram_features }}
-        working-directory: ./android_kernel_samsung_universal9611
-        run: |
-          echo "DEBUG: Evaluating 'Apply ZRAM Patches': zram_features is ${{ github.event.inputs.zram_features }}"
-          echo "Applying ZRAM patches (WARNING: Patches for 4.14 needed)..."
-          if [ ! -d "SukiSU_patch" ]; then git clone https://github.com/ShirkNeko/SukiSU_patch.git; fi
-          # Example: cp ./SukiSU_patch/other/zram/zram_patch/4.14/lz4kd.patch ./ && patch -p1 < lz4kd.patch || echo "LZ4KD patch failed"
-          echo "ZRAM patch application attempted."
-
-      - name: Add Configuration Settings to Defconfig
-        if: ${{ github.event.inputs.kpm_enable || github.event.inputs.vfs_hooks || github.event.inputs.zram_features }}
-        working-directory: ./android_kernel_samsung_universal9611
-        run: |
-          echo "DEBUG: Evaluating 'Add Configuration Settings': kpm_enable is ${{ github.event.inputs.kpm_enable }}, vfs_hooks is ${{ github.event.inputs.vfs_hooks }}, zram_features is ${{ github.event.inputs.zram_features }}"
-          echo "Adding configuration settings to defconfig..."
-          CONFIG_FILE="arch/arm64/configs/universal9611_defconfig"
-
-          if ${{ github.event.inputs.kpm_enable || github.event.inputs.vfs_hooks }}; then
-            echo "CONFIG_KSU=y" >> "$CONFIG_FILE"
-          fi
-          if ${{ github.event.inputs.kpm_enable }}; then
-            echo "CONFIG_KPM=y" >> "$CONFIG_FILE"
-          fi
-          if ! ${{ github.event.inputs.vfs_hooks }} && ${{ github.event.inputs.kpm_enable }}; then # Kprobes if KPM is on but VFS is off
-            echo "CONFIG_KPROBES=y" >> "$CONFIG_FILE"
-          fi
-
-          if ${{ github.event.inputs.vfs_hooks }}; then
-            echo "CONFIG_KSU_SUSFS_SUS_SU=n" >> "$CONFIG_FILE" 
-            echo "CONFIG_KSU_MANUAL_HOOK=y" >> "$CONFIG_FILE"
-            echo "CONFIG_KSU_SUSFS=y" >> "$CONFIG_FILE"
-            echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> "$CONFIG_FILE"
-            echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> "$CONFIG_FILE"
-            # Add other relevant CONFIG_KSU_SUSFS_* options here
-          elif ${{ github.event.inputs.kpm_enable }}; then 
-             echo "CONFIG_KSU_SUSFS_SUS_SU=y" >> "$CONFIG_FILE"
-          fi
-          
-          if ${{ github.event.inputs.zram_features }}; then
-            echo "# ZRAM Extra Features Configs (for 4.14, may need adjustment)" >> "$CONFIG_FILE"
-            echo "CONFIG_ZRAM_WRITEBACK=y" >> "$CONFIG_FILE" 
-            echo "CONFIG_CRYPTO_LZ4=y" >> "$CONFIG_FILE"    
-            echo "CONFIG_CRYPTO_LZ4HC=y" >> "$CONFIG_FILE"
-            echo "CONFIG_ZRAM_DEF_COMP_LZ4=y" >> "$CONFIG_FILE" 
-          fi
-          echo "Defconfig modifications complete."
-          cat "$CONFIG_FILE"
+          cd ..
 
       - name: Build kernel
         working-directory: ./android_kernel_samsung_universal9611
         run: |
           ADDITIONAL_FLAGS=""
-          if ${{ github.event.inputs.oneui }}; then # direct boolean usage
+          if ${{ github.event.inputs.oneui == true }}; then
             ADDITIONAL_FLAGS="$ADDITIONAL_FLAGS --oneui"
           fi
-          if ${{ github.event.inputs.allow_dirty }}; then
+          if ${{ github.event.inputs.allow_dirty == true }}; then
             ADDITIONAL_FLAGS="$ADDITIONAL_FLAGS --allow-dirty"
           fi
-          if ${{ github.event.inputs.permissive }}; then
+          if ${{ github.event.inputs.permissive == true }}; then
             ADDITIONAL_FLAGS="$ADDITIONAL_FLAGS --permissive"
           fi
+
           VERBOSE_FLAG=""
-          if ${{ github.event.inputs.verbose_build }}; then
-            VERBOSE_FLAG="-v" 
+          if ${{ github.event.inputs.verbose_build == true }}; then
+            VERBOSE_FLAG="-v" # Speculative verbose flag
           fi
           
           echo "Building kernel for target: ${{ github.event.inputs.device }} with additional flags: $ADDITIONAL_FLAGS $VERBOSE_FLAG"
-          python3 build_kernel.py --target=${{ github.event.inputs.device }} $ADDITIONAL_FLAGS $VERBOSE_FLAG
-
-      - name: Apply KPM Patch to Image (if enabled)
-        if: ${{ github.event.inputs.kpm_enable }}
-        working-directory: ./android_kernel_samsung_universal9611/AnyKernel3
-        run: |
-          echo "DEBUG: Evaluating 'Apply KPM Patch': kpm_enable is ${{ github.event.inputs.kpm_enable }}"
-          echo "Applying KPM Patch to Image..."
-          curl -LO https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/releases/download/0.11-beta/patch_linux
-          chmod +x patch_linux
-          
-          if [ -f "Image.gz-dtb" ]; then
-            mv Image.gz-dtb oImage.gz-dtb 
-            ./patch_linux # Assumes patch_linux can handle input oImage.gz-dtb and outputs 'Image' or modifies in place
-            if [ -f "Image" ]; then 
-                echo "patch_linux created 'Image'. Moving it to Image.gz-dtb."
-                mv Image Image.gz-dtb
-            elif [ -f "oImage.gz-dtb" ]; then 
-                echo "patch_linux finished. Assuming oImage.gz-dtb was patched or output not as expected."
-                # If patch_linux modified oImage.gz-dtb in place and it's still the target name:
-                # mv oImage.gz-dtb Image.gz-dtb 
-            else
-                echo "patch_linux did not produce an 'Image' file from oImage.gz-dtb. Using original."
-                mv oImage.gz-dtb Image.gz-dtb # Restore original if patch failed to produce output
-            fi
-            echo "KPM patch applied (or attempted)."
-          else
-            echo "Image.gz-dtb not found in AnyKernel3 for KPM patching. Build might have failed."
-            exit 1
-          fi
-
-      - name: Download SUSFS Module
-        # This entire step runs if KPM or VFS is enabled. The choice inside determines the download source.
-        if: ${{ github.event.inputs.kpm_enable || github.event.inputs.vfs_hooks }}
-        working-directory: ./android_kernel_samsung_universal9611/AnyKernel3
-        run: |
-          echo "DEBUG: Evaluating 'Download SUSFS Module': kpm_enable is ${{ github.event.inputs.kpm_enable }}, vfs_hooks is ${{ github.event.inputs.vfs_hooks }}"
-          echo "SUSFS Download Source selected: ${{ github.event.inputs.susfs_download_source }}"
-
-          if [ "${{ github.event.inputs.susfs_download_source }}" == "ci" ]; then
-            echo "Downloading Latest SUSFS Module from CI (sidex15/susfs4ksu-module)..."
-            LATEST_RUN_ID=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-              "https://api.github.com/repos/sidex15/susfs4ksu-module/actions/runs?status=success" | \
-              jq -r '.workflow_runs[] | select(.head_branch == "v1.5.2+") | .id' | head -n 1) 
-
-            if [ -z "$LATEST_RUN_ID" ]; then
-              echo "No successful CI run found for sidex15/susfs4ksu-module branch v1.5.2+. Trying release fallback as a precaution."
-              wget https://github.com/sidex15/ksu_module_susfs/releases/latest/download/ksu_module_susfs_1.5.2+.zip -O ksu_module_susfs.zip || echo "CI and Release fallback download also failed."
-            else
-              ARTIFACT_URL=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-                "https://api.github.com/repos/sidex15/susfs4ksu-module/actions/runs/$LATEST_RUN_ID/artifacts" | jq -r '.artifacts[] | select(.name=="ksu_module_susfs") | .archive_download_url') 
-              
-              if [ -z "$ARTIFACT_URL" ] || [ "$ARTIFACT_URL" == "null" ]; then
-                echo "Could not find 'ksu_module_susfs' artifact URL from CI. Trying release fallback."
-                wget https://github.com/sidex15/ksu_module_susfs/releases/latest/download/ksu_module_susfs_1.5.2+.zip -O ksu_module_susfs.zip || echo "CI artifact URL and Release fallback download also failed."
-              else
-                curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" -o ksu_module_susfs.zip "$ARTIFACT_URL"
-              fi
-            fi
-          elif [ "${{ github.event.inputs.susfs_download_source }}" == "release" ]; then
-            echo "Downloading Latest SUSFS Module from Release (sidex15/ksu_module_susfs)..."
-            wget https://github.com/sidex15/ksu_module_susfs/releases/latest/download/ksu_module_susfs_1.5.2+.zip -O ksu_module_susfs.zip || echo "Release download failed."
-          else
-            echo "Unknown SUSFS download source: ${{ github.event.inputs.susfs_download_source }}"
-          fi
-
-          if [ -f "ksu_module_susfs.zip" ]; then
-            echo "SUSFS module download successful."
-          else
-            echo "Failed to download SUSFS module."
-          fi
-
-      - name: Set Suffix for Artifact Name
-        id: suffix
-        run: |
-          val=""
-          if ${{ github.event.inputs.kpm_enable }}; then val="${val}_KPM"; fi
-          if ${{ github.event.inputs.vfs_hooks }}; then val="${val}_VFS"; fi
-          if ${{ github.event.inputs.zram_features }}; then val="${val}_LZ4KD"; fi
-          echo "value=${val}" >> $GITHUB_OUTPUT
+          # Added $VERBOSE_FLAG to the build command
+          python3 build_kernel.py --target=${{ github.event.inputs.device }} $ADDITIONAL_FLAGS $VERBOSE_FLAG # Build command from the guide [1]
 
       - name: Upload Kernel Zip
         uses: actions/upload-artifact@v4
         with:
-          name: Exynos9611_Kernel_${{ github.event.inputs.device }}${{ steps.suffix.outputs.value }}_KSU${{ env.KSUVER }}
+          name: kernel-zip-${{ github.event.inputs.device }}
           path: ./android_kernel_samsung_universal9611/SN_*.zip
           if-no-files-found: error
