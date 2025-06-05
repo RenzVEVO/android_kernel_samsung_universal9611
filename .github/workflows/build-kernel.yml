@@ -44,80 +44,85 @@ jobs:
           remove-android: 'true'
           remove-codeql: 'true'
 
-      - name: Install dependencies
+      - name: Install general dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git make libssl-dev curl bc pkg-config m4 libtool automake autoconf python-is-python3 # Dependencies from the compilation guide [1]
+          # Added libarchive-tools as requested, and kept previous dependencies
+          sudo apt-get install -y git make libssl-dev curl bc pkg-config m4 libtool automake autoconf python-is-python3 libarchive-tools # Dependencies from the compilation guide [1] and user feedback
 
-      - name: Clone kernel repository
+      - name: Clone kernel repository with submodules
         uses: actions/checkout@v4
         with:
           repository: Exynos9611Development/android_kernel_samsung_universal9611 # The kernel source [1]
           path: android_kernel_samsung_universal9611 # Clones into this subdirectory
-          # ref: 'main' 
+          submodules: 'recursive' # This is crucial for fetching AnyKernel3 contents
 
-      - name: Verify initial checkout and list files
+      - name: Verify AnyKernel3 checkout
         working-directory: ./android_kernel_samsung_universal9611
         run: |
           echo "Current directory: $(pwd)"
           echo "Listing contents of checked-out kernel source:"
           ls -la
+          echo "Checking AnyKernel3 directory and anykernel.sh:"
           if [ ! -d "AnyKernel3" ]; then
-            echo "Error: AnyKernel3 directory is missing after checkout."
+            echo "Error: AnyKernel3 directory is STILL missing after checkout with submodules."
             exit 1
           fi
           if [ ! -f "AnyKernel3/anykernel.sh" ]; then
-            echo "Error: AnyKernel3/anykernel.sh is missing after checkout."
-            ls -la AnyKernel3/ # List contents if script is missing
+            echo "Error: AnyKernel3/anykernel.sh is STILL missing after checkout with submodules."
+            echo "Contents of AnyKernel3 directory:"
+            ls -la AnyKernel3/
             exit 1
           fi
-          echo "AnyKernel3 directory and anykernel.sh found."
+          echo "AnyKernel3 directory and anykernel.sh found successfully."
 
-      - name: Set up toolchain
-        working-directory: ./android_kernel_samsung_universal9611 # This is the root of the cloned kernel source
+      - name: Setup Clang Toolchain (Neutron with Antman)
+        working-directory: ./android_kernel_samsung_universal9611 # The build_kernel.py script expects 'toolchain' here
         run: |
           set -e # Exit immediately if a command exits with a non-zero status.
-          echo "Starting toolchain setup..."
-          TOOLCHAIN_SCRIPT_URL="https://gist.githubusercontent.com/cat658011/9462b1778231226b4fae0171a8cf1fd3/raw/setup-toolchain.sh"
+          echo "Creating toolchain directory..."
+          mkdir toolchain
+          cd toolchain # All antman commands should run from within the 'toolchain' directory
           
-          echo "Downloading setup-toolchain.sh..."
-          curl -sL -o setup-toolchain.sh "$TOOLCHAIN_SCRIPT_URL"
+          echo "Current directory for antman: $(pwd)"
           
-          if [ ! -s setup-toolchain.sh ]; then
-            echo "Error: Failed to download toolchain script or script is empty."
+          echo "Running antman -S=10032024 (downloading Neutron Clang)..."
+          bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") -S=10032024
+          
+          echo "Running antman --patch=glibc (patching for glibc)..."
+          bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") --patch=glibc
+          
+          echo "Toolchain setup with antman finished."
+          echo "Verifying toolchain contents..."
+          # Check for clang, if it's directly in toolchain/bin or a subdirectory like toolchain/neutron-clang/bin
+          if [ -f "bin/clang" ] || [ -f */bin/clang ]; then
+            echo "Clang binary found in toolchain."
+            echo "Contents of toolchain directory:"
+            ls -la
+            if [ -d "bin" ]; then
+              echo "Contents of toolchain/bin:"
+              ls -la bin
+            fi
+            # Also list subdirectories if neutron-clang was created
+             if compgen -G "*/bin/clang" > /dev/null; then
+              CLANG_DIR=$(dirname -- "$(find . -name clang -type f -print -quit)")
+              CLANG_DIR=$(dirname -- "$CLANG_DIR") # Go up to the main toolchain folder (e.g., neutron-clang)
+              echo "Detected clang in subdirectory: $CLANG_DIR"
+              echo "Contents of $CLANG_DIR:"
+              ls -la "$CLANG_DIR"
+              echo "Contents of $CLANG_DIR/bin:"
+              ls -la "$CLANG_DIR/bin"
+            fi
+          else
+            echo "Error: Clang binary was NOT found in toolchain/bin or toolchain/*/bin after antman script execution."
+            echo "Contents of toolchain directory:"
+            ls -la
             exit 1
           fi
-          
-          echo "Executing setup-toolchain.sh. This might take a while..."
-          bash setup-toolchain.sh
-          
-          echo "Toolchain setup script finished."
-          echo "Verifying toolchain directory and clang..."
-          if [ -d "toolchain" ] && [ -f "toolchain/bin/clang" ]; then
-            echo "Toolchain directory and clang binary found."
-            echo "Contents of toolchain/bin:"
-            ls -la toolchain/bin
-          else
-            echo "Error: Toolchain directory (toolchain) or toolchain/bin/clang was NOT created/found after script execution."
-            echo "Contents of current directory (should be kernel source root):"
-            ls -la
-            if [ -d "toolchain" ]; then
-              echo "Contents of toolchain directory:"
-              ls -la toolchain
-              if [ -d "toolchain/bin" ]; then
-                echo "Contents of toolchain/bin:"
-                ls -la toolchain/bin
-              else
-                echo "toolchain/bin directory does not exist."
-              fi
-            else
-              echo "toolchain directory does not exist."
-            fi
-            exit 1 # Explicitly fail if toolchain is not set up correctly
-          fi
+          cd .. # Go back to android_kernel_samsung_universal9611 directory
 
       - name: Build kernel
-        working-directory: ./android_kernel_samsung_universal9611 # This is the root of the cloned kernel source
+        working-directory: ./android_kernel_samsung_universal9611
         run: |
           echo "Current directory before build: $(pwd)"
           echo "Listing contents to ensure everything is in place:"
@@ -126,10 +131,14 @@ jobs:
           ls -la AnyKernel3/
           echo "Checking toolchain again:"
           ls -la toolchain/
-          if [ -d "toolchain/bin" ]; then
-            ls -la toolchain/bin/
+          # More specific check based on antman's typical output structure (often creates a subdir like 'neutron-clang')
+          if compgen -G "toolchain/*/bin/clang" > /dev/null; then
+            echo "Clang found in toolchain subdirectory."
+          elif [ -f "toolchain/bin/clang" ]; then
+            echo "Clang found directly in toolchain/bin."
           else
-            echo "toolchain/bin not found right before build!"
+            echo "CRITICAL: toolchain/bin/clang or toolchain/*/bin/clang not found right before build!"
+            exit 1
           fi
 
           ADDITIONAL_FLAGS=""
@@ -150,5 +159,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: kernel-zip-${{ github.event.inputs.device }}
-          path: ./android_kernel_samsung_universal9611/SN_*.zip # Path relative to $GITHUB_WORKSPACE
+          path: ./android_kernel_samsung_universal9611/SN_*.zip
           if-no-files-found: error
