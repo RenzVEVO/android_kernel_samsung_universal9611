@@ -8,14 +8,13 @@ on:
         type: choice
         required: true
         options: 
-          - a515f
-          - a515s
-          - f415f
-          - m315f 
-          - m317f
+          - a51
+          - f41
+          - m31
+          - m31s
           - gta4xl
           - gta4xlwifi
-          - m215f
+          - m21
         default: 'a515f'
       oneui:
         description: 'Build for OneUI (Default is AOSP variant)'
